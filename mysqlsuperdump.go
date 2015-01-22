@@ -23,6 +23,7 @@ var (
 	configFile         string
 	dsn                string
 	extendedInsertRows int
+	tableMap 		   = make(map[string]string, 0)
 	whereMap           = make(map[string]string, 0)
 	selectMap          = make(map[string]map[string]string, 0)
 	filterMap          = make(map[string]string, 0)
@@ -89,17 +90,17 @@ func main() {
 		if filterMap[table] != "ignore" {
 			skipData := filterMap[table] == "nodata"
 			if ! skipData && useTableLock {
-				verbose.Printf("> Locking table %s...\n", table)
+				verbose.Printf("> Locking table %s...\n", tableMap[table])
 				lockTable(db, table)
 				flushTable(db, table)
 			}
-			verbose.Printf("> Dumping structure for table %s...\n", table)
+			verbose.Printf("> Dumping structure for table %s...\n", tableMap[table])
 			dumpCreateTable(w, db, table)
 			if ! skipData {
-				verbose.Printf("> Dumping data for table %s...\n", table)
+				verbose.Printf("> Dumping data for table %s...\n", tableMap[table])
 				dumpTableData(w, db, table)
 				if useTableLock {
-					verbose.Printf("> Unlocking table %s...\n", table)
+					verbose.Printf("> Unlocking table %s...\n", tableMap[table])
 					unlockTables(db)
 				}
 			}
@@ -179,12 +180,12 @@ func readConfigFile() {
 
 // Lock the table (read only)
 func lockTable(db *sql.DB, table string) (sql.Result, error) {
-	return ExecQuery(db, fmt.Sprintf("LOCK TABLES `%s` READ", table))
+	return ExecQuery(db, fmt.Sprintf("LOCK TABLES `%s` READ", tableMap[table]))
 }
 
 // Flush table to ensure that the all active index pages are written to disk
 func flushTable(db *sql.DB, table string) (sql.Result, error) {
-	return ExecQuery(db, fmt.Sprintf("FLUSH TABLES `%s`", table))
+	return ExecQuery(db, fmt.Sprintf("FLUSH TABLES `%s`", tableMap[table]))
 }
 
 // Release the global read locks
@@ -203,7 +204,8 @@ func getTables(db *sql.DB) (tables []string) {
 		err = rows.Scan(&tableName, &tableType)
 		checkError(err)
 		if tableType == "BASE TABLE" {
-			tables = append(tables, tableName)
+			tableMap[strings.ToLower(tableName)] = tableName;
+			tables = append(tables, strings.ToLower(tableName))
 		}
 		// TODO feature to export views as well
 	}
@@ -214,10 +216,11 @@ func getTables(db *sql.DB) (tables []string) {
 // Dump the script to create the table
 func dumpCreateTable(w io.Writer, db *sql.DB, table string) {
 	fmt.Fprintf(w, "\n--\n")
-	fmt.Fprintf(w, "-- Structure for table `%s`\n", table)
+	fmt.Fprintf(w, "-- Structure for table `%s`\n", tableMap[table])
 	fmt.Fprintf(w, "--\n\n")
-	fmt.Fprintf(w, "DROP TABLE IF EXISTS `%s`;\n", table)
-	row := QueryRow(db, fmt.Sprintf("SHOW CREATE TABLE `%s`", table))
+	fmt.Fprintf(w, "DROP TABLE IF EXISTS `%s`;\n", tableMap[table])
+	row := QueryRow(db, fmt.Sprintf("SHOW CREATE TABLE `%s`", tableMap[table]))
+	
 	var tname, ddl string
 	err := row.Scan(&tname, &ddl)
 	checkError(err)
@@ -227,7 +230,7 @@ func dumpCreateTable(w io.Writer, db *sql.DB, table string) {
 // Get the column list for the SELECT, applying the select map
 // from config file.
 func getColumnListForSelect(db *sql.DB, table string) string {
-	rows, err := Query(db, fmt.Sprintf("SELECT * FROM `%s` LIMIT 1", table))
+	rows, err := Query(db, fmt.Sprintf("SELECT * FROM `%s` LIMIT 1", tableMap[table]))
 	checkError(err)
 	columns, err := rows.Columns()
 	checkError(err)
@@ -245,7 +248,7 @@ func getColumnListForSelect(db *sql.DB, table string) string {
 // Get the complete SELECT query to fetch data from database
 func getSelectQueryFor(db *sql.DB, table string) (query string) {
 	columns := getColumnListForSelect(db, table)
-	query = fmt.Sprintf("SELECT %s FROM `%s`", columns, table)
+	query = fmt.Sprintf("SELECT %s FROM `%s`", columns, tableMap[table])
 	where, ok := whereMap[table]
 	if ok {
 		query = fmt.Sprintf("%s WHERE %s", query, where)
@@ -255,7 +258,7 @@ func getSelectQueryFor(db *sql.DB, table string) (query string) {
 
 // Get the number of rows the select will return
 func getSelectCountQueryFor(db *sql.DB, table string) (query string) {
-	query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`", table)
+	query = fmt.Sprintf("SELECT COUNT(*) FROM `%s`", tableMap[table])
 	where, ok := whereMap[table]
 	if ok {
 		query = fmt.Sprintf("%s WHERE %s", query, where)
@@ -265,7 +268,7 @@ func getSelectCountQueryFor(db *sql.DB, table string) (query string) {
 
 // Get the table data
 func dumpTableData(w io.Writer, db *sql.DB, table string) {
-	fmt.Fprintf(w, "\n--\n-- Data for table `%s`", table)
+	fmt.Fprintf(w, "\n--\n-- Data for table `%s`", tableMap[table])
 
 	var count uint64
 	row := QueryRow(db, getSelectCountQueryFor(db, table))
@@ -277,8 +280,8 @@ func dumpTableData(w io.Writer, db *sql.DB, table string) {
 		return // Avoid table lock if empty
 	}
 
-	fmt.Fprintf(w, "LOCK TABLES `%s` WRITE;\n", table)
-	query := fmt.Sprintf("INSERT INTO `%s` VALUES", table)
+	fmt.Fprintf(w, "LOCK TABLES `%s` WRITE;\n", tableMap[table])
+	query := fmt.Sprintf("INSERT INTO `%s` VALUES", tableMap[table])
 	data := make([]string, 0)
 
 	selectQuery := getSelectQueryFor(db, table)
